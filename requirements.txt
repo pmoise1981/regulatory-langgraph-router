@@ -1,0 +1,10 @@
+langgraph
+langchain-aws
+langchain-community
+langchain-text-splitters
+pypdf
+opensearch-py
+requests-aws4auth
+boto3
+pydantic
+langgraph-checkpoint-aws
