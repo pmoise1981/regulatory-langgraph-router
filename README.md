@@ -88,6 +88,60 @@ Full AWS deploy (provisions everything, OpenSearch, Lambda, S3, DynamoDB, ECR, I
 - Bedrock model access for third-party models requires a one-time "use case" form submission per AWS account (not scriptable).
 - Upload your own source PDFs to S3 under domain prefixes (aml/, bsa/, ofac/, kyc/, general/) before running ingestion.
 
+## Evaluation
+
+Built a RAGAS-based eval harness (`eval.py`, `eval_dataset.py`) against 10 golden questions across AML/BSA/KYC, run through the actual deployed graph — not a separate test-only path. Metrics: **Faithfulness** (is the answer supported by retrieved context), **Answer Relevancy**, **Context Precision**, and **Context Recall**.
+
+### Baseline (k=4 retrieval)
+
+| Metric | Score |
+|---|---|
+| Faithfulness | 0.889 |
+| Answer Relevancy | 0.654 |
+| Context Precision | 0.533 |
+| Context Recall | 0.457 |
+
+The aggregate hid the real story: 3 of 10 questions scored a hard 0.0 across relevancy/precision/recall. Rather than trust the average, each failure was traced to its retrieved context individually.
+
+### Root-cause diagnosis
+
+| Question | Root cause | Category |
+|---|---|---|
+| CIP requirements | No CIP document existed anywhere in the corpus (confirmed via filename search and full-text search of the adjacent CDD document) | Corpus gap |
+| BSA recordkeeping ($10K CTR) | No document in the corpus covers CTR thresholds | Corpus gap |
+| AML program elements | Right content existed but ranked below the top-k results | Retrieval precision |
+
+### Tested fix #1: increase k (4 to 6) — reported honestly as a wash
+
+| Metric | k=4 | k=6 | Delta |
+|---|---|---|---|
+| Faithfulness | 0.889 | 0.909 | +0.019 |
+| Answer Relevancy | 0.654 | 0.612 | -0.042 |
+| Context Precision | 0.533 | 0.505 | -0.029 |
+| Context Recall | 0.457 | 0.580 | +0.123 |
+
+Recall improved, but precision and relevancy both slipped — the classic recall/precision tradeoff. More candidates surfaced more relevant material overall, but also introduced noise into previously-clean answers. **Net effect: not a clear win.** Retrieval-tuning alone did not fix the CIP failure, confirming it was a corpus gap, not a ranking problem.
+
+### Tested fix #2: source and ingest the missing CIP document
+
+Sourced the official FFIEC BSA/AML Examination Manual's Customer Identification Program section (FDIC-hosted, 12 pages) and re-ingested.
+
+| Metric | Before (k=6, no CIP doc) | After (k=6, +CIP doc) | Delta |
+|---|---|---|---|
+| Faithfulness | 0.909 | 0.942 | +0.033 |
+| Answer Relevancy | 0.612 | 0.787 | +0.175 |
+| Context Precision | 0.505 | 0.601 | +0.096 |
+| Context Recall | 0.580 | 0.630 | +0.050 |
+
+**The CIP question specifically went from a complete 0.0/0.0/0.0/0.0 failure to 1.0 / 0.955 / 0.633 / 0.5** — the exact result predicted by the root-cause diagnosis. The BSA recordkeeping question remained at 0/0/0 across both runs, as expected, since it's an unrelated corpus gap that ingesting a CIP document wouldn't touch.
+
+### What this demonstrates
+
+- Aggregate eval scores can hide which specific failures matter — per-question root-cause analysis found two distinct corpus gaps and one retrieval-precision issue that a single averaged number would have obscured.
+- A plausible-sounding fix (more retrieved chunks) was tested and honestly reported as not a clear improvement, rather than cherry-picking the one metric that moved favorably.
+- The actual fix — sourcing and ingesting the real missing document — was validated with a second eval run, not assumed to work from the diagnosis alone.
+- LLM-judge eval metrics carry run-to-run variance (one question's recall score shifted between otherwise-comparable runs); the results here are directionally strong and consistent on the metrics that matter (the targeted CIP fix), but a fully rigorous version of this harness would average multiple runs per configuration before treating small deltas as signal.
+
 ## License
 
 MIT
