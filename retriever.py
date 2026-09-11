@@ -7,7 +7,7 @@ from config import embeddings, OPENSEARCH_INDEX, OPENSEARCH_PIPELINE, DOMAINS
 from ingestion import get_client
 
 
-def hybrid_search(query: str, domain: Optional[str], k: int = 4) -> list[Document]:
+def hybrid_search(query: str, domain: Optional[str], k: int = 6) -> list[Document]:
     """Hybrid BM25 + kNN retrieval using OpenSearch's native hybrid query.
     'hybrid' must always be the top-level query (OpenSearch rejects it wrapped
     in a bool). This domain runs OpenSearch 2.11, which predates the 3.0+

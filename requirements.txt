@@ -8,3 +8,5 @@ requests-aws4auth
 boto3
 pydantic
 langgraph-checkpoint-aws
+ragas
+pandas
