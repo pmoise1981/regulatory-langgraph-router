@@ -40,9 +40,9 @@ variable "online_eval_sample_rate" {
 }
 
 variable "online_eval_limit" {
-  description = "Max root runs the online evaluator fetches per invocation."
+  description = "Max root runs the online evaluator fetches per invocation. LangSmith's /runs/query API hard-caps a single request at 100 -- do not raise this above 100, the Lambda will fail on every invocation if you do."
   type        = number
-  default     = 200
+  default     = 100
 }
 
 variable "slo_monitor_schedule" {
@@ -57,9 +57,9 @@ variable "slo_since_minutes" {
 }
 
 variable "slo_limit" {
-  description = "Max root runs the SLO monitor fetches per invocation."
+  description = "Max root runs the SLO monitor fetches per invocation. LangSmith's /runs/query API hard-caps a single request at 100 -- do not raise this above 100, the Lambda will fail on every invocation if you do."
   type        = number
-  default     = 500
+  default     = 100
 }
 
 variable "alert_webhook_url" {

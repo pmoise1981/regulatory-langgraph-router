@@ -17,7 +17,7 @@ def handler(event, context):
 
     since_minutes = int(os.environ.get("ONLINE_EVAL_SINCE_MINUTES", "60"))
     sample_rate = float(os.environ.get("ONLINE_EVAL_SAMPLE_RATE", "0.2"))
-    limit = int(os.environ.get("ONLINE_EVAL_LIMIT", "200"))
+    limit = int(os.environ.get("ONLINE_EVAL_LIMIT", "100"))
 
     client = Client()
     stats = run_online_evaluation(

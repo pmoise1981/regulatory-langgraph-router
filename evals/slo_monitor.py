@@ -65,7 +65,22 @@ def _p95(values: list[float]) -> float:
     return ordered[index]
 
 
+# LangSmith's /runs/query API rejects any single request with limit > 100
+# outright (confirmed against the live API: "Limit exceeds maximum allowed
+# value of 100") -- list_runs() passes `limit` straight through as one
+# request, it does not chunk a larger ask into multiple pages itself. Rather
+# than silently truncate a caller's larger request, this fails loudly so a
+# misconfigured --limit or SLO_LIMIT env var is caught before it becomes a
+# scheduled Lambda invocation that fails on every single run.
+LANGSMITH_RUNS_QUERY_MAX_LIMIT = 100
+
+
 def fetch_window_runs(client: Client, project_name: str, since_minutes: int, limit: int) -> list[Run]:
+    if limit > LANGSMITH_RUNS_QUERY_MAX_LIMIT:
+        raise ValueError(
+            f"limit={limit} exceeds LangSmith's per-query maximum of "
+            f"{LANGSMITH_RUNS_QUERY_MAX_LIMIT}."
+        )
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     return list(
         client.list_runs(project_name=project_name, is_root=True, start_time=since, limit=limit)
@@ -198,7 +213,12 @@ def main():
         default=30,
         help="Trailing window (minutes) of root runs to compute metrics over.",
     )
-    parser.add_argument("--limit", type=int, default=500, help="Max root runs to fetch per invocation.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Max root runs to fetch per invocation (LangSmith's API caps this at 100).",
+    )
     args = parser.parse_args()
 
     if not args.project:

@@ -145,6 +145,14 @@ def already_scored(client: Client, run_id) -> bool:
     return any(client.list_feedback(run_ids=[run_id], feedback_key=[JUDGE_FEEDBACK_KEY]))
 
 
+# LangSmith's /runs/query API rejects any single request with limit > 100
+# outright ("Limit exceeds maximum allowed value of 100") -- confirmed
+# against the live API. list_runs() passes `limit` straight through as one
+# request rather than chunking a larger ask into multiple pages, so this
+# fails loudly instead of silently truncating a caller's larger request.
+LANGSMITH_RUNS_QUERY_MAX_LIMIT = 100
+
+
 def run_online_evaluation(
     client: Client,
     project_name: str,
@@ -152,6 +160,11 @@ def run_online_evaluation(
     sample_rate: float,
     limit: int,
 ) -> dict:
+    if limit > LANGSMITH_RUNS_QUERY_MAX_LIMIT:
+        raise ValueError(
+            f"limit={limit} exceeds LangSmith's per-query maximum of "
+            f"{LANGSMITH_RUNS_QUERY_MAX_LIMIT}."
+        )
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     runs = client.list_runs(
         project_name=project_name,
@@ -212,8 +225,8 @@ def main():
     parser.add_argument(
         "--limit",
         type=int,
-        default=200,
-        help="Max root runs to fetch per invocation.",
+        default=100,
+        help="Max root runs to fetch per invocation (LangSmith's API caps this at 100).",
     )
     args = parser.parse_args()
 

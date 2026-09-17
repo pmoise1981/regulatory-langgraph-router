@@ -28,7 +28,7 @@ def handler(event, context):
         raise RuntimeError("LANGCHAIN_PROJECT env var is required but not set.")
 
     since_minutes = int(os.environ.get("SLO_SINCE_MINUTES", "30"))
-    limit = int(os.environ.get("SLO_LIMIT", "500"))
+    limit = int(os.environ.get("SLO_LIMIT", "100"))
 
     client = Client()
     result = run_self_check(client, project_name, since_minutes, limit)
