@@ -97,11 +97,40 @@ def _document_text(doc) -> str:
     return getattr(doc, "page_content", str(doc))
 
 
+# judge_prompt | judge_llm is a LangChain "Runnable sequence" (the `|` pipe
+# operator LangChain overloads to mean "feed the output of the left side
+# into the right side"). Building it once at import time, instead of inside
+# judge_answer() below, means every judged trace reuses the same compiled
+# chain object rather than re-wiring the prompt-to-model connection on every
+# call -- a small thing, but it's the idiomatic LangChain pattern.
+_judge_chain = judge_prompt | judge_llm
+
+
 @structured_output_retry
+def judge_answer(question: str, context: str, answer: str) -> QualityJudgment:
+    """The actual judge call: plain strings in, a validated QualityJudgment
+    out. Deliberately takes raw strings rather than a LangSmith Run object,
+    so anything that already has a question/context/answer can call this
+    directly -- judge_run() below (production traces) and
+    judge_calibration.py (hand-labeled fixtures) both do, without either one
+    needing to know how the other builds its inputs.
+
+    @structured_output_retry (guardrails.py) wraps this call: if the model
+    returns something that doesn't validate against QualityJudgment (e.g. a
+    malformed score), or Bedrock throttles, this retries with backoff before
+    giving up -- see guardrails.py for the actual retry policy.
+    """
+    return _judge_chain.invoke({"question": question, "context": context, "answer": answer})
+
+
 def judge_run(run: Run) -> QualityJudgment:
     """Runs the LLM-as-judge against one production trace's real
     question/context/answer — pulled from the graph's actual state shape
-    (query/documents/answer), the same GraphState defined in graph.py."""
+    (query/documents/answer), the same GraphState defined in graph.py.
+
+    This is just the "extract the right fields from a LangSmith Run" step;
+    judge_answer() above does the actual judging once it has plain strings.
+    """
     inputs = run.inputs or {}
     outputs = run.outputs or {}
     question = inputs.get("query", "")
@@ -109,8 +138,7 @@ def judge_run(run: Run) -> QualityJudgment:
     documents = outputs.get("documents") or []
     context = "\n\n".join(_document_text(d) for d in documents)
 
-    chain = judge_prompt | judge_llm
-    return chain.invoke({"question": question, "context": context, "answer": answer})
+    return judge_answer(question, context, answer)
 
 
 def already_scored(client: Client, run_id) -> bool:
