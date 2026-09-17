@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from config import llm, classifier_llm_base, DOMAINS, CONFIDENCE_THRESHOLD
 from retriever import hybrid_retrievers
 from checkpointer import checkpointer
+from guardrails import extract_answer_text, invoke_structured_with_fallback
 
 
 # --- Graph state: the shared object every node reads/writes ---
@@ -25,8 +26,21 @@ class DomainClassification(BaseModel):
     domain: Literal["AML", "BSA", "OFAC", "KYC", "GENERAL"] = Field(
         description="The single regulatory domain this query is primarily about"
     )
-    confidence: float = Field(description="Confidence score between 0.0 and 1.0")
+    # ge/le are enforced, not just described — without them, a model returning
+    # e.g. 95 instead of 0.95 would pass validation and silently make every
+    # query "confident enough" to skip the GENERAL fallback below.
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
     reasoning: str = Field(description="One sentence explaining the classification, for audit purposes")
+
+
+# Used when the classifier call fails validation/retries entirely (see
+# invoke_structured_with_fallback) — routes to the same safe GENERAL path a
+# low-confidence classification would, rather than crashing the request.
+FALLBACK_CLASSIFICATION = DomainClassification(
+    domain="GENERAL",
+    confidence=0.0,
+    reasoning="Classifier call failed validation/retries; routed to GENERAL as a safe fallback.",
+)
 
 
 classifier_llm = classifier_llm_base.with_structured_output(DomainClassification)
@@ -50,7 +64,9 @@ classification_prompt = ChatPromptTemplate.from_messages(
 # --- Node: classify_domain — entry point of the graph ---
 def classify_domain(state: GraphState) -> GraphState:
     chain = classification_prompt | classifier_llm
-    result: DomainClassification = chain.invoke({"query": state["query"]})
+    result, call_meta = invoke_structured_with_fallback(
+        chain, {"query": state["query"]}, FALLBACK_CLASSIFICATION, "classify_domain"
+    )
 
     # Force GENERAL if confidence is too low — safety valve against misrouting to the wrong corpus.
     final_domain = result.domain if result.confidence >= CONFIDENCE_THRESHOLD else "GENERAL"
@@ -62,6 +78,9 @@ def classify_domain(state: GraphState) -> GraphState:
         "final_domain": final_domain,
         "reasoning": result.reasoning,
     }
+    if call_meta["status"] == "fallback":
+        audit_entry["fallback_used"] = True
+        audit_entry["fallback_error"] = call_meta["error"]
     return {
         **state,
         "domain": final_domain,
@@ -110,10 +129,17 @@ def generate_answer(state: GraphState) -> GraphState:
     chain = generation_prompt | llm
     response = chain.invoke({"context": context, "query": state["query"]})
 
+    # response.content isn't guaranteed to be a plain string — extract_answer_text
+    # guards against a content-block list or empty response silently flowing
+    # into state["answer"] and out through the Lambda response body.
+    answer = extract_answer_text(response.content)
+
     audit_entry = {"step": "generate_answer", "domain_used": state["domain"]}
+    if answer != response.content:
+        audit_entry["answer_shape_corrected"] = True
     return {
         **state,
-        "answer": response.content,
+        "answer": answer,
         "audit_log": state["audit_log"] + [audit_entry],
     }
 

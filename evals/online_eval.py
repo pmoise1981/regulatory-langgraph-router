@@ -38,16 +38,15 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from botocore.exceptions import ClientError
 from langchain_core.prompts import ChatPromptTemplate
 from langsmith import Client
 from langsmith.schemas import FeedbackSourceType, Run
 from pydantic import BaseModel, Field
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-# config.py lives at the repo root, one level up from evals/.
+# config.py / guardrails.py live at the repo root, one level up from evals/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import llm  # noqa: E402
+from guardrails import structured_output_retry  # noqa: E402
 
 JUDGE_FEEDBACK_KEY = "online_llm_judge_quality"
 
@@ -60,8 +59,10 @@ class QualityJudgment(BaseModel):
         description="True if the answer actually addresses the question that was asked"
     )
     score: float = Field(
+        ge=0.0,
+        le=1.0,
         description="Overall quality score from 0.0 (bad) to 1.0 (excellent), combining "
-        "faithfulness and relevance"
+        "faithfulness and relevance",
     )
     reasoning: str = Field(description="One or two sentence justification, for audit purposes")
 
@@ -88,21 +89,6 @@ judge_prompt = ChatPromptTemplate.from_messages(
 )
 
 
-def _is_bedrock_throttling(exc: BaseException) -> bool:
-    if isinstance(exc, ClientError):
-        code = exc.response.get("Error", {}).get("Code", "")
-        return code in {"ThrottlingException", "TooManyRequestsException"}
-    return "ThrottlingException" in str(exc) or "Too Many Requests" in str(exc)
-
-
-bedrock_retry = retry(
-    retry=retry_if_exception(_is_bedrock_throttling),
-    wait=wait_exponential(multiplier=2, min=2, max=60),
-    stop=stop_after_attempt(6),
-    reraise=True,
-)
-
-
 def _document_text(doc) -> str:
     """Production traces come back from the LangSmith API as plain JSON, not
     live Document objects, so this handles however a Document round-tripped
@@ -113,7 +99,7 @@ def _document_text(doc) -> str:
     return getattr(doc, "page_content", str(doc))
 
 
-@bedrock_retry
+@structured_output_retry
 def judge_run(run: Run) -> QualityJudgment:
     """Runs the LLM-as-judge against one production trace's real
     question/context/answer — pulled from the graph's actual state shape

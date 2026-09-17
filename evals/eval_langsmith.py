@@ -32,7 +32,6 @@ import sys
 import uuid
 from pathlib import Path
 
-from botocore.exceptions import ClientError
 from langsmith import Client
 from langsmith.evaluation import evaluate
 from langsmith.schemas import Example, Run
@@ -45,12 +44,12 @@ from ragas.metrics import (
     LLMContextPrecisionWithReference,
     LLMContextRecall,
 )
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-# graph.py / config.py live at the repo root, one level up from evals/.
+# graph.py / config.py / guardrails.py live at the repo root, one level up from evals/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import embeddings, llm  # noqa: E402
 from graph import graph  # noqa: E402
+from guardrails import bedrock_retry  # noqa: E402
 
 DATASET_PATH = Path(__file__).resolve().parent / "golden_dataset.json"
 LANGSMITH_DATASET_NAME = "regulatory-router-golden-qa"
@@ -73,29 +72,6 @@ def load_golden_dataset() -> list[dict]:
         if "question" not in item or "reference" not in item:
             raise ValueError(f"Golden dataset entry missing question/reference: {item}")
     return golden_set
-
-
-def _is_bedrock_throttling(exc: BaseException) -> bool:
-    """Matches Bedrock's rate-limit error, whether it surfaces as a raw
-    botocore ClientError or gets wrapped by langchain-aws in its own
-    exception type (in which case only the message text survives)."""
-    if isinstance(exc, ClientError):
-        code = exc.response.get("Error", {}).get("Code", "")
-        return code in {"ThrottlingException", "TooManyRequestsException"}
-    return "ThrottlingException" in str(exc) or "Too Many Requests" in str(exc)
-
-
-# Applied on top of config.py's own BEDROCK_RETRY_CONFIG (adaptive, 8 attempts,
-# per Bedrock call) as defense-in-depth for the eval loop specifically: many
-# back-to-back cases can still exceed on-demand throughput even with adaptive
-# retry on each individual call, so this retries the whole graph invocation /
-# metric scoring call with backoff.
-bedrock_retry = retry(
-    retry=retry_if_exception(_is_bedrock_throttling),
-    wait=wait_exponential(multiplier=2, min=2, max=60),
-    stop=stop_after_attempt(6),
-    reraise=True,
-)
 
 
 @bedrock_retry
