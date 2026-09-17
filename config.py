@@ -9,6 +9,41 @@ from langchain_aws import ChatBedrockConverse, BedrockEmbeddings
 DOMAINS = ["AML", "BSA", "OFAC", "KYC"]
 CONFIDENCE_THRESHOLD = 0.6  # below this, force GENERAL fallback rather than trust a shaky classification
 
+# --- SLO thresholds for evals/slo_monitor.py ---
+# Illustrative demo defaults, not derived from a real SLA — same caveat as
+# CONFIDENCE_THRESHOLD above. Override via env var (Terraform sets these on
+# the slo_monitor Lambda; see terraform/slo_monitor.tf) rather than editing
+# here, so the threshold is visible in one place without a code change.
+SLO_MAX_P95_LATENCY_SECONDS = float(os.environ.get("SLO_MAX_P95_LATENCY_SECONDS", "15"))
+SLO_MAX_MEAN_COST_USD = float(os.environ.get("SLO_MAX_MEAN_COST_USD", "0.02"))
+SLO_MIN_MEAN_QUALITY_SCORE = float(os.environ.get("SLO_MIN_MEAN_QUALITY_SCORE", "0.7"))
+# Slack-compatible incoming webhook URL (a generic JSON POST works for any
+# webhook receiver that logs the body) — never commit a real one; empty
+# disables alerting and just logs breaches instead.
+ALERT_WEBHOOK_URL = os.environ.get("ALERT_WEBHOOK_URL", "")
+
+# Shared between evals/online_eval.py (which writes this feedback) and
+# evals/slo_monitor.py (which only reads it) — lives here, not in
+# online_eval.py, so slo_monitor.py doesn't need to import a module that
+# constructs a Bedrock client just to get one constant.
+JUDGE_FEEDBACK_KEY = "online_llm_judge_quality"
+
+
+def is_application_trace(run) -> bool:
+    """True only for a root run that's a real graph.invoke() production
+    trace (has a non-empty "query" in its inputs, matching GraphState's
+    shape). evals/online_eval.py and evals/slo_monitor.py both scan
+    is_root=True runs in the LangSmith project via list_runs(), which
+    surfaces *any* root-level run logged there -- including this project's
+    own instrumentation, like slo_monitor.py's run_self_check "tool" run.
+    Without this filter, a self-check run gets judged as an empty/garbage
+    production answer (online_eval.py) or counted into latency/cost stats
+    as if it were a real query (slo_monitor.py) -- a real bug caught by
+    actually running this against live LangSmith data, not something a
+    unit test with fake Run objects would have surfaced."""
+    inputs = run.inputs or {}
+    return bool(inputs.get("query"))
+
 # --- AWS / infra config ---
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 OPENSEARCH_URL = os.environ.get("OPENSEARCH_URL", "https://your-opensearch-domain.us-east-1.es.amazonaws.com")

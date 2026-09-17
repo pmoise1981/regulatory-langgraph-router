@@ -10,3 +10,6 @@ pydantic
 langgraph-checkpoint-aws
 ragas
 pandas
+langsmith
+tenacity
+requests

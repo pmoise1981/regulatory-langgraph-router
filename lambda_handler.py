@@ -3,6 +3,9 @@
 import base64
 import json
 import uuid
+
+from langchain_core.tracers.langchain import wait_for_all_tracers
+
 from graph import graph
 
 
@@ -25,6 +28,17 @@ def handler(event, context):
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = {"query": query, "domain": "", "confidence": 0.0, "documents": [], "answer": "", "audit_log": []}
     result = graph.invoke(initial_state, config=config)
+
+    # LangChain sends trace data (including this run's final outputs and
+    # end_time) asynchronously in a background thread. AWS Lambda freezes
+    # the execution environment the instant this handler returns, before
+    # that background flush can complete -- confirmed against a real
+    # deployed trace: its `inputs` (recorded synchronously at the start)
+    # came through fine, but `outputs` was `None` even though the
+    # invocation above completed successfully. This blocks until the
+    # pending trace submission actually finishes sending, so LangSmith
+    # records the real outputs and end_time before the container freezes.
+    wait_for_all_tracers()
 
     return {
         "statusCode": 200,

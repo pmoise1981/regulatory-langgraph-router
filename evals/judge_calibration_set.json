@@ -1,0 +1,68 @@
+[
+  {
+    "id": "cal01_sar_faithful",
+    "question": "What are the SAR filing deadlines under AML requirements?",
+    "context": "A bank must file a SAR within 30 calendar days of initial detection of facts constituting a basis for filing, extendable to 60 days if no suspect is identified. For continuing activity, a SAR should be filed at least every 90 days, per FinCEN guidance allowing up to 120 days between related filings.",
+    "answer": "A bank must file a Suspicious Activity Report within 30 calendar days of detecting the activity, or up to 60 days if no suspect has been identified yet. For ongoing suspicious activity, a follow-up SAR should be filed every 90 days.",
+    "expected_faithful": true,
+    "expected_relevant": true,
+    "expected_score_min": 0.8,
+    "expected_score_max": 1.0,
+    "note": "Correct paraphrase of the context, nothing added. Should score high on both faithfulness and relevance."
+  },
+  {
+    "id": "cal02_sar_fabricated_claim",
+    "question": "What are the SAR filing deadlines under AML requirements?",
+    "context": "A bank must file a SAR within 30 calendar days of initial detection of facts constituting a basis for filing, extendable to 60 days if no suspect is identified. For continuing activity, a SAR should be filed at least every 90 days, per FinCEN guidance allowing up to 120 days between related filings.",
+    "answer": "A bank must file a SAR within 30 calendar days of detection. A copy of every SAR must also be mailed directly to the customer's state attorney general within 10 days of filing.",
+    "expected_faithful": false,
+    "expected_relevant": true,
+    "expected_score_min": 0.0,
+    "expected_score_max": 0.4,
+    "note": "The second sentence is fabricated -- nothing in the context supports notifying a state attorney general, and SARs are explicitly confidential (tipping off the subject or third parties is itself a violation). This is the core case the judge exists to catch: a plausible-sounding but unsupported claim mixed in with correct information."
+  },
+  {
+    "id": "cal03_sar_off_topic_answer",
+    "question": "What are the SAR filing deadlines under AML requirements?",
+    "context": "A bank must file a SAR within 30 calendar days of initial detection of facts constituting a basis for filing, extendable to 60 days if no suspect is identified. For continuing activity, a SAR should be filed at least every 90 days, per FinCEN guidance allowing up to 120 days between related filings.",
+    "answer": "Customer Identification Program (CIP) requires verifying a customer's identity using government-issued documents before opening an account.",
+    "expected_faithful": true,
+    "expected_relevant": false,
+    "expected_score_min": 0.0,
+    "expected_score_max": 0.4,
+    "note": "The answer is a true statement (about a different regulatory topic entirely) but doesn't address the question asked. Tests that the judge scores relevance independently of faithfulness -- a faithful-but-off-topic answer should still score low overall, exactly the retrieval-routing failure mode this system's domain classifier exists to prevent."
+  },
+  {
+    "id": "cal04_cip_faithful",
+    "question": "What is Customer Identification Program (CIP) required to verify?",
+    "context": "CIP requires verification of a customer's identity using government-issued documents, collecting name, date of birth, address, and identification number before opening an account.",
+    "answer": "CIP requires banks to verify a customer's identity before opening an account, using government-issued ID to collect their name, date of birth, address, and identification number.",
+    "expected_faithful": true,
+    "expected_relevant": true,
+    "expected_score_min": 0.8,
+    "expected_score_max": 1.0,
+    "note": "Correct paraphrase, nothing added."
+  },
+  {
+    "id": "cal05_cip_fabricated_claim",
+    "question": "What is Customer Identification Program (CIP) required to verify?",
+    "context": "CIP requires verification of a customer's identity using government-issued documents, collecting name, date of birth, address, and identification number before opening an account.",
+    "answer": "CIP requires verifying identity via government-issued documents and collecting name, date of birth, address, and ID number. It also requires a minimum $500 deposit to activate identity verification.",
+    "expected_faithful": false,
+    "expected_relevant": true,
+    "expected_score_min": 0.0,
+    "expected_score_max": 0.4,
+    "note": "The $500 minimum deposit claim is invented -- not in the context, not a real CIP requirement. Same fabrication pattern as cal02, different domain."
+  },
+  {
+    "id": "cal06_cip_faithful_but_incomplete",
+    "question": "What is Customer Identification Program (CIP) required to verify?",
+    "context": "CIP requires verification of a customer's identity using government-issued documents, collecting name, date of birth, address, and identification number before opening an account.",
+    "answer": "CIP requires verifying a customer's name and address using a government-issued document before opening an account.",
+    "expected_faithful": true,
+    "expected_relevant": true,
+    "expected_score_min": 0.4,
+    "expected_score_max": 0.9,
+    "note": "Genuinely ambiguous calibration case, included deliberately: the answer omits date of birth and identification number but doesn't state anything false. The judge's rubric (faithfulness = no unsupported claims) says this should still count as faithful even though it's incomplete -- but 'incomplete' vs 'unfaithful' is exactly the kind of distinction judges can blur. A wide expected-score band reflects that a human could reasonably rate this anywhere from 'mostly fine' to 'not thorough enough' -- if the actual judge score lands outside 0.4-0.9 in either direction, that's worth a second look, not necessarily a hard failure."
+  }
+]

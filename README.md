@@ -59,16 +59,19 @@ Domain-filtered hybrid search failed in production with "Engine [NMSLIB] does no
 
 ## Project structure
 
-config.py - settings, model clients (Sonnet 4.6 + Haiku 4.5), IAM-based OpenSearch auth
+config.py - settings, model clients (Sonnet 4.6 + Haiku 4.5), IAM-based OpenSearch auth, SLO thresholds
+guardrails.py - structured-output validation and retry/fallback for LLM calls in the graph
 ingestion.py - standalone: loads PDFs from S3 per domain prefix, chunks, embeds, indexes (Faiss)
 retriever.py - runtime: OpenSearch native hybrid (BM25+kNN) retrieval, domain-filtered
 checkpointer.py - DynamoDB checkpoint persistence
 graph.py - LangGraph: state, classify/retrieve/generate nodes, conditional routing
 main.py - local CLI entry point
 lambda_handler.py - AWS Lambda entry point (same graph)
-Dockerfile - Lambda container image
+online_eval_handler.py / slo_monitor_handler.py - scheduled Lambda entry points for the reliability layer below
+Dockerfile - Lambda container image (all three entry points share one image)
 deploy.sh - full deploy: infra, image, ingestion, one command
-terraform/ - OpenSearch, Lambda, IAM, ECR, S3, DynamoDB, all as code
+terraform/ - OpenSearch, Lambda, IAM, ECR, S3, DynamoDB, EventBridge schedules, all as code
+evals/ - eval.py's LangSmith-integrated + online + SLO-monitoring counterparts (see AI Reliability Layer below)
 
 ## Running it
 
@@ -141,6 +144,60 @@ Sourced the official FFIEC BSA/AML Examination Manual's Customer Identification 
 - A plausible-sounding fix (more retrieved chunks) was tested and honestly reported as not a clear improvement, rather than cherry-picking the one metric that moved favorably.
 - The actual fix — sourcing and ingesting the real missing document — was validated with a second eval run, not assumed to work from the diagnosis alone.
 - LLM-judge eval metrics carry run-to-run variance (one question's recall score shifted between otherwise-comparable runs); the results here are directionally strong and consistent on the metrics that matter (the targeted CIP fix), but a fully rigorous version of this harness would average multiple runs per configuration before treating small deltas as signal.
+
+## AI Reliability Layer
+
+Beyond the golden-set eval above, this repo also implements a four-part reliability layer covering what happens after deployment — evaluation-as-monitoring, online evaluation, guardrails, and SLO alerting.
+
+1. **Evaluation-as-monitoring** (`evals/eval_langsmith.py`) — loads the golden Q&A set from `evals/golden_dataset.json` (the same questions as `eval_dataset.py` above, file-maintained instead of hardcoded), uploads it as a versioned LangSmith Dataset, and scores the graph against it via LangSmith's `evaluate()` using the same four RAGAS metrics as `eval.py` — but tracked as a browsable LangSmith Experiment rather than a local CSV only.
+2. **Online evaluators** (`evals/online_eval.py`) — an LLM-as-judge that scores a sample of *live production traces*, not just golden-set runs, for faithfulness and relevance, writing the result back as LangSmith feedback. Deployed as its own scheduled Lambda (`online_eval_handler.py`, `terraform/online_eval.tf`), triggered hourly by EventBridge. **Judge calibration** (`evals/judge_calibration.py`, `evals/judge_calibration_set.json`): an LLM judge has known biases (fooled by confident-sounding fabricated claims, inconsistent about off-topic-but-true answers), so this checks the same judge against a small hand-labeled set of deliberately clear-cut cases and reports agreement — run on demand (whenever the judge prompt changes, or periodically), not on a schedule, since it's a cheap check that doesn't need to run continuously.
+3. **Guardrails** (`guardrails.py`) — real Pydantic constraints (`ge`/`le`, not just field descriptions) on structured LLM outputs, plus retry/fallback: a malformed classifier response degrades to the same safe `GENERAL` routing a low-confidence one already takes, instead of crashing the request. Also normalizes the generation node's output shape, since a chat model's response content isn't guaranteed to be a plain string.
+4. **SLOs and alerting** (`evals/slo_monitor.py`) — checks p95 latency, mean Bedrock cost/query, and mean LLM-judge quality score (read from the online evaluator's feedback) against thresholds in `config.py`, posting a webhook alert on breach. Runs every 15 minutes via its own scheduled Lambda (`slo_monitor_handler.py`, `terraform/slo_monitor.tf`); makes no Bedrock calls itself, so its IAM role grants CloudWatch Logs only.
+
+**Who watches the watcher**: the SLO monitor Lambda is itself monitored two ways. CloudWatch alarms (`terraform/self_monitoring.tf`) on its `Errors` metric and a dead-man's-switch on `Invocations` (missing data treated as a failure, not ignored) route through SNS to a forwarder Lambda (`alarm_forwarder_handler.py`) that posts into the same webhook channel as an SLO breach — this is what actually triggers paging, since it catches crashes LangSmith structurally can't see (the SLO monitor makes no LLM calls, so there's nothing for LangSmith to trace on its own). Additionally, every self-check invocation is logged as an explicit LangSmith run (`run_self_check` in `evals/slo_monitor.py`, via `Client.create_run`/`update_run` — a direct API record, not LLM tracing), so its pass/fail history is also visible from the same LangSmith project as everything else, not just from AWS/Slack.
+
+### Proof it actually works
+
+Deployed to real AWS (`terraform apply`, 13 resources) and run against real Bedrock/OpenSearch/LangSmith traffic — not just unit-tested. Screenshots below are the primary evidence, not narrated claims.
+
+**A real query, judged for real**: asking the deployed app "What is a Politically Exposed Person (PEP)?" produced a correct, well-cited KYC answer in 6.39s for $0.0117. `online_eval.py` then judged that exact trace and wrote back real LangSmith feedback:
+
+> `online_llm_judge_quality: 0.97` — *"Every claim in the answer is directly supported by the retrieved context from the FFIEC BSA/AML Examination Manual. The answer accurately captures the industry definition of PEP..., the lack of a formal BSA/AML regulatory definition, the distinction from SFPF, and the clarification that PEPs do not automatically present higher risk. The answer directly and comprehensively addresses the question asked."*
+
+![LangSmith trace of the real PEP query, judged 0.97 by the online LLM judge, with the full classify/retrieve/generate breakdown](docs/screenshots/Screenshot%202026-09-17%20002345.png)
+
+**Real bugs, found only by actually running it, not by unit tests:**
+- **Docker's container image manifest format.** Modern `docker build` (BuildKit) attaches provenance/SBOM attestations by default, producing a multi-manifest OCI image index — which AWS Lambda's container image support flatly rejects ("image manifest... is not supported"). Fixed with `--provenance=false --sbom=false`.
+- **LangSmith's undocumented 100-item cap on `/runs/query`.** `online_eval.py` and `slo_monitor.py`'s defaults (200 and 500) both exceeded it — meaning the already-deployed scheduled Lambdas were failing on *every single scheduled invocation* until this was caught and both defaults lowered to 100, with a guard that now fails loudly instead of hitting the API blind.
+- **Production traces losing their own outputs.** A completed, successful trace showed `outputs: None` in LangSmith even though the real answer came back correctly — LangChain flushes trace data asynchronously in a background thread, and AWS Lambda freezes the execution environment the instant the handler returns, cutting off that flush before it completes. This silently corrupted both `slo_monitor.py`'s latency numbers (`end_time` never got set) and `online_eval.py`'s judgments (a real, correct answer got scored as "empty"). Fixed by calling `wait_for_all_tracers()` before the handler returns.
+
+  Before the fix, a real, correct production answer was scored as an empty response because its outputs never made it to LangSmith:
+
+  ![Broken trace before the fix: a real query answered correctly, but LangSmith shows "No outputs" and the online judge scored it 0.10](docs/screenshots/Screenshot%202026-09-17%20002443.png)
+
+  After the fix, reading the same run directly via the LangSmith SDK confirms the real outputs now arrive intact:
+
+  ![Direct LangSmith SDK read of a post-fix run, showing populated outputs instead of None](docs/screenshots/Screenshot%202026-09-17%20002653.png)
+
+- **Self-check runs contaminating production metrics.** `slo_monitor.py`'s own health-check logging created root-level LangSmith runs in the same project the online evaluator and SLO monitor both scan — so a self-check got judged as a blank answer, and its own timing got averaged into "production" latency. Fixed with an explicit filter requiring a real `query` field before anything is treated as production traffic.
+
+Both `slo_monitor.py` and `online_eval.py` running end-to-end against the live deployment, post-fix — all SLOs within threshold, real judge score written back:
+
+![Terminal output: slo_monitor.py and online_eval.py run against live infrastructure, p95 latency 6.39s, cost $0.0117, judge score 0.97](docs/screenshots/Screenshot%202026-09-17%20002554.png)
+
+The SLO monitor's breach detection also fires correctly when a real threshold is crossed — this self-check run flagged mean judge quality (0.54 across n=2 sampled runs) below the 0.7 floor:
+
+![SLO monitor self-check LangSmith run showing a real, correctly-detected breach](docs/screenshots/Screenshot%202026-09-17%20002258.png)
+
+**Self-monitoring, confirmed live**: the two CloudWatch alarms watching the SLO monitor Lambda itself — `Errors`, and a dead-man's-switch on `Invocations` — are both `OK`:
+
+![Two CloudWatch alarms for the SLO monitor Lambda, slo-monitor-errors and slo-monitor-missed-invocation, both OK](docs/screenshots/Screenshot%202026-09-17%20004124.png)
+
+All Lambdas from this reliability layer, deployed and live alongside the main app:
+
+![Five deployed Lambda functions: the main router, online-eval, slo-monitor, and alarm-forwarder](docs/screenshots/Screenshot%202026-09-17%20004205.png)
+
+**Status**: implemented, unit-tested, *and* now verified end-to-end against live infrastructure. The default SLO thresholds (15s p95 latency, $0.02/query, 0.7 quality floor) are still starting points from a single real data point, not a calibrated baseline — tune them against sustained real traffic before trusting them to page anyone.
 
 ## License
 
