@@ -59,16 +59,19 @@ Domain-filtered hybrid search failed in production with "Engine [NMSLIB] does no
 
 ## Project structure
 
-config.py - settings, model clients (Sonnet 4.6 + Haiku 4.5), IAM-based OpenSearch auth
+config.py - settings, model clients (Sonnet 4.6 + Haiku 4.5), IAM-based OpenSearch auth, SLO thresholds
+guardrails.py - structured-output validation and retry/fallback for LLM calls in the graph
 ingestion.py - standalone: loads PDFs from S3 per domain prefix, chunks, embeds, indexes (Faiss)
 retriever.py - runtime: OpenSearch native hybrid (BM25+kNN) retrieval, domain-filtered
 checkpointer.py - DynamoDB checkpoint persistence
 graph.py - LangGraph: state, classify/retrieve/generate nodes, conditional routing
 main.py - local CLI entry point
 lambda_handler.py - AWS Lambda entry point (same graph)
-Dockerfile - Lambda container image
+online_eval_handler.py / slo_monitor_handler.py - scheduled Lambda entry points for the reliability layer below
+Dockerfile - Lambda container image (all three entry points share one image)
 deploy.sh - full deploy: infra, image, ingestion, one command
-terraform/ - OpenSearch, Lambda, IAM, ECR, S3, DynamoDB, all as code
+terraform/ - OpenSearch, Lambda, IAM, ECR, S3, DynamoDB, EventBridge schedules, all as code
+evals/ - eval.py's LangSmith-integrated + online + SLO-monitoring counterparts (see AI Reliability Layer below)
 
 ## Running it
 
@@ -141,6 +144,17 @@ Sourced the official FFIEC BSA/AML Examination Manual's Customer Identification 
 - A plausible-sounding fix (more retrieved chunks) was tested and honestly reported as not a clear improvement, rather than cherry-picking the one metric that moved favorably.
 - The actual fix — sourcing and ingesting the real missing document — was validated with a second eval run, not assumed to work from the diagnosis alone.
 - LLM-judge eval metrics carry run-to-run variance (one question's recall score shifted between otherwise-comparable runs); the results here are directionally strong and consistent on the metrics that matter (the targeted CIP fix), but a fully rigorous version of this harness would average multiple runs per configuration before treating small deltas as signal.
+
+## AI Reliability Layer
+
+Beyond the golden-set eval above, this repo also implements a four-part reliability layer covering what happens after deployment — evaluation-as-monitoring, online evaluation, guardrails, and SLO alerting.
+
+1. **Evaluation-as-monitoring** (`evals/eval_langsmith.py`) — loads the golden Q&A set from `evals/golden_dataset.json` (the same questions as `eval_dataset.py` above, file-maintained instead of hardcoded), uploads it as a versioned LangSmith Dataset, and scores the graph against it via LangSmith's `evaluate()` using the same four RAGAS metrics as `eval.py` — but tracked as a browsable LangSmith Experiment rather than a local CSV only.
+2. **Online evaluators** (`evals/online_eval.py`) — an LLM-as-judge that scores a sample of *live production traces*, not just golden-set runs, for faithfulness and relevance, writing the result back as LangSmith feedback. Deployed as its own scheduled Lambda (`online_eval_handler.py`, `terraform/online_eval.tf`), triggered hourly by EventBridge.
+3. **Guardrails** (`guardrails.py`) — real Pydantic constraints (`ge`/`le`, not just field descriptions) on structured LLM outputs, plus retry/fallback: a malformed classifier response degrades to the same safe `GENERAL` routing a low-confidence one already takes, instead of crashing the request. Also normalizes the generation node's output shape, since a chat model's response content isn't guaranteed to be a plain string.
+4. **SLOs and alerting** (`evals/slo_monitor.py`) — checks p95 latency, mean Bedrock cost/query, and mean LLM-judge quality score (read from the online evaluator's feedback) against thresholds in `config.py`, posting a webhook alert on breach. Runs every 15 minutes via its own scheduled Lambda (`slo_monitor_handler.py`, `terraform/slo_monitor.tf`); makes no Bedrock calls itself, so its IAM role grants CloudWatch Logs only.
+
+**Status**: implemented and unit-tested — the guardrail retry/fallback logic and SLO threshold checks have standalone tests, and all three Lambda handlers were verified to import cleanly from a simulated copy of the exact file layout the Dockerfile produces. Not yet exercised end-to-end: `terraform plan`/`apply` against live AWS, and a real run against production Bedrock/OpenSearch/LangSmith traffic. Treat the default SLO thresholds (15s p95 latency, $0.02/query, 0.7 quality floor) as starting points to tune against real traffic, not measured values — consistent with this repo's own "live proof, not just a diagram" standard above, which this layer doesn't yet meet.
 
 ## License
 
