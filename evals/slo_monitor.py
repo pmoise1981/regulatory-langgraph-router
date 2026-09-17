@@ -44,6 +44,7 @@ from config import (  # noqa: E402
     SLO_MAX_MEAN_COST_USD,
     SLO_MAX_P95_LATENCY_SECONDS,
     SLO_MIN_MEAN_QUALITY_SCORE,
+    is_application_trace,
 )
 
 
@@ -82,9 +83,12 @@ def fetch_window_runs(client: Client, project_name: str, since_minutes: int, lim
             f"{LANGSMITH_RUNS_QUERY_MAX_LIMIT}."
         )
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
-    return list(
-        client.list_runs(project_name=project_name, is_root=True, start_time=since, limit=limit)
-    )
+    runs = client.list_runs(project_name=project_name, is_root=True, start_time=since, limit=limit)
+    # Filters out this project's own instrumentation runs (e.g. this very
+    # function's caller, run_self_check, logs its own root "tool" run) so
+    # they never get counted as production latency/cost -- see
+    # is_application_trace's docstring for why this matters.
+    return [r for r in runs if is_application_trace(r)]
 
 
 def compute_metrics(client: Client, runs: list[Run]) -> dict:

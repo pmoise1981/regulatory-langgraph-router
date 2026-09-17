@@ -45,7 +45,7 @@ from pydantic import BaseModel, Field
 
 # config.py / guardrails.py live at the repo root, one level up from evals/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import JUDGE_FEEDBACK_KEY, llm  # noqa: E402
+from config import JUDGE_FEEDBACK_KEY, is_application_trace, llm  # noqa: E402
 from guardrails import structured_output_retry  # noqa: E402
 
 
@@ -173,8 +173,22 @@ def run_online_evaluation(
         limit=limit,
     )
 
-    stats = {"scored": 0, "skipped_sample": 0, "skipped_already_scored": 0, "errored": 0}
+    stats = {
+        "scored": 0,
+        "skipped_sample": 0,
+        "skipped_already_scored": 0,
+        "skipped_not_application_run": 0,
+        "errored": 0,
+    }
     for run in runs:
+        # Excludes this project's own instrumentation runs (e.g.
+        # slo_monitor.py's run_self_check "tool" run) that also show up as
+        # is_root=True in the same project -- without this, they get judged
+        # as an empty/garbage "answer" instead of being recognized as not a
+        # production trace at all. See is_application_trace's docstring.
+        if not is_application_trace(run):
+            stats["skipped_not_application_run"] += 1
+            continue
         if random.random() > sample_rate:
             stats["skipped_sample"] += 1
             continue
