@@ -23,6 +23,7 @@ breaches are printed but no webhook is sent.
 """
 
 import argparse
+import math
 import os
 import statistics
 import sys
@@ -52,8 +53,14 @@ class SLOBreach:
 
 
 def _p95(values: list[float]) -> float:
+    """Nearest-rank p95: rank = ceil(0.95 * n), 0-based index = rank - 1.
+    Using int(n * 0.95) directly as the index (the previous version here)
+    is off by one whenever n * 0.95 lands exactly on an integer -- e.g. for
+    n=20, that gives index 19 (the max) instead of the correct index 18,
+    systematically overstating p95 and risking false SLO breaches."""
     ordered = sorted(values)
-    index = min(int(len(ordered) * 0.95), len(ordered) - 1)
+    rank = math.ceil(0.95 * len(ordered))
+    index = max(0, min(rank - 1, len(ordered) - 1))
     return ordered[index]
 
 

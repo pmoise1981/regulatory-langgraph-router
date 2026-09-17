@@ -53,6 +53,15 @@ from guardrails import bedrock_retry  # noqa: E402
 
 DATASET_PATH = Path(__file__).resolve().parent / "golden_dataset.json"
 LANGSMITH_DATASET_NAME = "regulatory-router-golden-qa"
+# Namespaces the golden set's own "id" fields (q01, q02, ...) into stable
+# LangSmith example ids, so re-running this script after editing
+# golden_dataset.json updates the changed examples in place (create_examples
+# upserts by id) instead of silently testing against a stale remote copy.
+_EXAMPLE_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, f"langsmith-dataset/{LANGSMITH_DATASET_NAME}")
+
+
+def _stable_example_id(item_id: str) -> str:
+    return str(uuid.uuid5(_EXAMPLE_ID_NAMESPACE, item_id))
 
 
 def load_golden_dataset() -> list[dict]:
@@ -145,22 +154,28 @@ evaluators = [
 
 
 def upload_dataset(client: Client, golden_set: list[dict]) -> str:
-    """Creates the LangSmith dataset from the golden set if it doesn't exist
-    yet. Idempotent: reuses the existing dataset on subsequent runs rather
-    than duplicating examples every time this script is run."""
+    """Creates the LangSmith dataset if it doesn't exist, then upserts every
+    example by a stable id derived from the JSON's own "id" field.
+    create_examples upserts by id rather than only inserting, so re-running
+    this after editing golden_dataset.json updates the changed examples in
+    place instead of silently testing against a stale remote copy.
+    Removing a question from the JSON does not delete its remote example --
+    that's a deliberate simplification for a 10-question set, not handled
+    here."""
     if client.has_dataset(dataset_name=LANGSMITH_DATASET_NAME):
         print(f"Reusing existing LangSmith dataset '{LANGSMITH_DATASET_NAME}'.")
-        return LANGSMITH_DATASET_NAME
+    else:
+        print(f"Creating LangSmith dataset '{LANGSMITH_DATASET_NAME}'...")
+        client.create_dataset(
+            dataset_name=LANGSMITH_DATASET_NAME,
+            description="Golden Q&A set for the regulatory router graph (AML/BSA/OFAC/KYC).",
+        )
 
-    print(f"Creating LangSmith dataset '{LANGSMITH_DATASET_NAME}'...")
-    client.create_dataset(
-        dataset_name=LANGSMITH_DATASET_NAME,
-        description="Golden Q&A set for the regulatory router graph (AML/BSA/OFAC/KYC).",
-    )
     client.create_examples(
         dataset_name=LANGSMITH_DATASET_NAME,
         examples=[
             {
+                "id": _stable_example_id(item["id"]),
                 "inputs": {"question": item["question"]},
                 "outputs": {"reference": item["reference"]},
                 "metadata": {"id": item["id"]},

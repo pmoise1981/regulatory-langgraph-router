@@ -65,7 +65,15 @@ resource "aws_lambda_function" "online_eval" {
 
   environment {
     variables = {
-      LANGCHAIN_TRACING_V2      = var.langsmith_api_key != "" ? "true" : "false"
+      # Deliberately "false", not conditional on the API key: this function's
+      # own judge_run() LLM calls must never be traced into the same project
+      # run_online_evaluation() scans, or the judge's own traces would become
+      # eligible for judging on the next scheduled run -- writing meaningless
+      # feedback and skewing the SLO monitor's cost/latency stats with its
+      # own overhead. LANGCHAIN_API_KEY/PROJECT below are still required: the
+      # LangSmith Client() itself (reading runs, writing feedback) is a
+      # direct API call, not tracing, and isn't affected by this.
+      LANGCHAIN_TRACING_V2      = "false"
       LANGCHAIN_API_KEY         = var.langsmith_api_key
       LANGCHAIN_PROJECT         = var.project_name
       ONLINE_EVAL_SINCE_MINUTES = tostring(var.online_eval_since_minutes)
