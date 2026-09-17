@@ -13,3 +13,7 @@ output "ecr_repository_url" {
 output "documents_bucket" {
   value = aws_s3_bucket.documents.bucket
 }
+
+output "online_eval_lambda_name" {
+  value = aws_lambda_function.online_eval.function_name
+}
