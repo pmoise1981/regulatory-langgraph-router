@@ -45,10 +45,8 @@ from pydantic import BaseModel, Field
 
 # config.py / guardrails.py live at the repo root, one level up from evals/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import llm  # noqa: E402
+from config import JUDGE_FEEDBACK_KEY, llm  # noqa: E402
 from guardrails import structured_output_retry  # noqa: E402
-
-JUDGE_FEEDBACK_KEY = "online_llm_judge_quality"
 
 
 class QualityJudgment(BaseModel):

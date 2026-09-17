@@ -44,3 +44,45 @@ variable "online_eval_limit" {
   type        = number
   default     = 200
 }
+
+variable "slo_monitor_schedule" {
+  description = "EventBridge schedule expression for the SLO-monitoring Lambda."
+  default     = "rate(15 minutes)"
+}
+
+variable "slo_since_minutes" {
+  description = "Trailing window (minutes) of production traces the SLO monitor checks per run. Should be >= the schedule interval so no traces are skipped between runs."
+  type        = number
+  default     = 30
+}
+
+variable "slo_limit" {
+  description = "Max root runs the SLO monitor fetches per invocation."
+  type        = number
+  default     = 500
+}
+
+variable "alert_webhook_url" {
+  description = "Slack-compatible incoming webhook URL for SLO breach alerts. Pass via TF_VAR_alert_webhook_url env var — never commit it. Empty disables alerting (breaches are still logged)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "slo_max_p95_latency_seconds" {
+  description = "SLO threshold: p95 root-run latency, in seconds."
+  type        = number
+  default     = 15
+}
+
+variable "slo_max_mean_cost_usd" {
+  description = "SLO threshold: mean Bedrock cost per query, in USD."
+  type        = number
+  default     = 0.02
+}
+
+variable "slo_min_mean_quality_score" {
+  description = "SLO threshold: mean LLM-judge quality score (from online_eval feedback)."
+  type        = number
+  default     = 0.7
+}

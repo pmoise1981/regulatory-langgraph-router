@@ -17,3 +17,7 @@ output "documents_bucket" {
 output "online_eval_lambda_name" {
   value = aws_lambda_function.online_eval.function_name
 }
+
+output "slo_monitor_lambda_name" {
+  value = aws_lambda_function.slo_monitor.function_name
+}

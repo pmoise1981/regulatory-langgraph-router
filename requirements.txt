@@ -12,3 +12,4 @@ ragas
 pandas
 langsmith
 tenacity
+requests
