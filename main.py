@@ -1,6 +1,9 @@
 # Local entry point — run this to ask the graph a question from the command line.
 # For AWS deployment, lambda_handler.py is the entry point instead; both call the same graph.
 import uuid
+
+from langchain_core.tracers.langchain import wait_for_all_tracers
+
 from graph import graph
 
 
@@ -18,3 +21,9 @@ if __name__ == "__main__":
     print("\nAudit trail:")
     for entry in result["audit_log"]:
         print(entry)
+
+    # Same reasoning as lambda_handler.py: LangChain flushes trace data
+    # (including this run's outputs/end_time) asynchronously in the
+    # background, and the interpreter exiting right after this print can
+    # kill that flush mid-flight just like a Lambda freeze does.
+    wait_for_all_tracers()
