@@ -7,12 +7,19 @@
 # LangSmith run/feedback data already recorded by the main app and
 # online_eval_handler.py), so its IAM role in Terraform grants no Bedrock
 # permission at all.
+#
+# run_self_check() additionally logs this invocation as an explicit
+# LangSmith run (pass/fail, not an LLM trace) so its own history is visible
+# from the same LangSmith project as everything else -- see run_self_check's
+# docstring for why that's additive to, not a replacement for, the
+# CloudWatch alarms in terraform/self_monitoring.tf that actually trigger
+# paging on a crash.
 import os
 
 from langsmith import Client
 
 from config import ALERT_WEBHOOK_URL
-from evals.slo_monitor import check_slos, compute_metrics, fetch_window_runs, send_alert
+from evals.slo_monitor import run_self_check, send_alert
 
 
 def handler(event, context):
@@ -24,11 +31,11 @@ def handler(event, context):
     limit = int(os.environ.get("SLO_LIMIT", "500"))
 
     client = Client()
-    runs = fetch_window_runs(client, project_name, since_minutes, limit)
-    metrics = compute_metrics(client, runs)
+    result = run_self_check(client, project_name, since_minutes, limit)
+    metrics = result["metrics"]
+    breaches = result["breaches"]
     print(f"Metrics over last {since_minutes} min ({metrics['num_runs']} runs): {metrics}")
 
-    breaches = check_slos(metrics)
     if not breaches:
         print("All SLOs within threshold.")
         return {"statusCode": 200, "body": {"breaches": [], "metrics": metrics}}

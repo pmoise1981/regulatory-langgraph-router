@@ -27,6 +27,7 @@ import math
 import os
 import statistics
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -128,6 +129,50 @@ def check_slos(metrics: dict) -> list[SLOBreach]:
     return breaches
 
 
+SELF_CHECK_RUN_NAME = "slo_monitor_self_check"
+
+
+def run_self_check(client: Client, project_name: str, since_minutes: int, limit: int) -> dict:
+    """Runs the actual SLO check wrapped in an explicit LangSmith run, so the
+    monitor's own pass/fail history is visible in the same LangSmith project
+    as everything else -- not just in CloudWatch (terraform/self_monitoring.tf).
+
+    This is additive, not a replacement for CloudWatch: this function makes
+    no LLM calls, so there's nothing for LangSmith to trace here on its own,
+    and a crash before this logging even runs (OOM, timeout, an unhandled
+    exception at import time) would leave no LangSmith record at all --
+    CloudWatch's Errors/Invocations metrics are emitted by AWS regardless of
+    what the code does, which is what actually has to catch that case. So on
+    failure here, the error is still recorded to LangSmith AND re-raised,
+    so the Lambda invocation still registers as errored for the CloudWatch
+    alarm in terraform/self_monitoring.tf to fire on.
+    """
+    run_id = uuid.uuid4()
+    client.create_run(
+        id=run_id,
+        name=SELF_CHECK_RUN_NAME,
+        run_type="tool",
+        project_name=project_name,
+        inputs={"since_minutes": since_minutes, "limit": limit},
+        start_time=datetime.now(timezone.utc),
+    )
+
+    try:
+        runs = fetch_window_runs(client, project_name, since_minutes, limit)
+        metrics = compute_metrics(client, runs)
+        breaches = check_slos(metrics)
+    except Exception as e:
+        client.update_run(run_id, error=str(e), end_time=datetime.now(timezone.utc))
+        raise
+
+    client.update_run(
+        run_id,
+        outputs={"metrics": metrics, "breaches": [b.detail for b in breaches]},
+        end_time=datetime.now(timezone.utc),
+    )
+    return {"metrics": metrics, "breaches": breaches}
+
+
 def send_alert(webhook_url: str, project_name: str, breaches: list[SLOBreach], metrics: dict) -> None:
     if not webhook_url:
         print("ALERT_WEBHOOK_URL not set — breach(es) logged above only, no webhook sent.")
@@ -160,11 +205,11 @@ def main():
         parser.error("--project is required (or set LANGSMITH_PROJECT / LANGCHAIN_PROJECT).")
 
     client = Client()
-    runs = fetch_window_runs(client, args.project, args.since_minutes, args.limit)
-    metrics = compute_metrics(client, runs)
+    result = run_self_check(client, args.project, args.since_minutes, args.limit)
+    metrics = result["metrics"]
+    breaches = result["breaches"]
     print(f"Metrics over last {args.since_minutes} min ({metrics['num_runs']} runs): {metrics}")
 
-    breaches = check_slos(metrics)
     if not breaches:
         print("All SLOs within threshold.")
         return
