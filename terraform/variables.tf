@@ -86,3 +86,9 @@ variable "slo_min_mean_quality_score" {
   type        = number
   default     = 0.7
 }
+
+variable "slo_monitor_period_seconds" {
+  description = "Must be kept in sync with slo_monitor_schedule (Terraform can't parse an arbitrary rate()/cron() expression into seconds automatically). Used as the evaluation window for the self-monitoring alarms in terraform/self_monitoring.tf: the Errors alarm uses this period, and the missed-invocation dead-man's-switch alarm uses 2x it."
+  type        = number
+  default     = 900 # 15 minutes, matching the default slo_monitor_schedule
+}

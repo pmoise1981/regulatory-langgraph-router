@@ -21,3 +21,8 @@ output "online_eval_lambda_name" {
 output "slo_monitor_lambda_name" {
   value = aws_lambda_function.slo_monitor.function_name
 }
+
+output "slo_monitor_health_topic_arn" {
+  description = "Subscribe an email/PagerDuty/etc. endpoint here directly for paging, in addition to the webhook the alarm_forwarder Lambda already posts to."
+  value       = aws_sns_topic.slo_monitor_health.arn
+}
